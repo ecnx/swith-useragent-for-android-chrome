@@ -1,0 +1,176 @@
+vprops
+    sys.ro.build.version.release=6.9.9
+    sys.ro.product.manufacturer=samsung
+    sys.ro.product.model=SM-J710X
+    sys.ro.build.version.codename=REL
+    sys.ro.build.id=MMB29K
+    sys.ro.hardware.egl=
+    web.navigator.deviceMemory=4
+    web.navigator.hardwareConcurrency=3
+    app.chrome.product=ChromX/123
+    app.chrome.greased_product=Chroome
+    app.chrome.greased_version=123
+    app.chrome.full_version=94.1.2.3
+    net.connecion.type=wifi
+    sys.gpu.renderer=Mali-T213
+    sys.gpu.vendor=AMR
+
+set-build-args
+    # Build arguments go here.
+    # See "gn args <out_dir> --list" for available build arguments.
+    is_debug = false
+    is_java_debug = false
+    is_component_build = true
+    target_os = "android"
+    target_cpu = "arm"
+    dcheck_always_on = false
+
+switch-release
+    git reset --hard
+    gclient sync --with_branch_heads --with_tags
+    git fetch origin
+    git checkout -b branch_$BRANCH branch-heads/$BRANCH
+    # https://chromiumdash.appspot.com/branches
+    gclient sync --with_branch_heads --with_tags
+
+build-only
+    autoninja -C out/Default chrome_public_apk
+
+run-command
+    autoninja -C out/Default chrome_public_apk; x="$?"; echo -e '\a'; [ "$x" -eq 0 ] && adb install -r ./out/Default/apks/ChromePublic.apk
+
+update-command:
+    gclient sync
+
+proxy-command
+    axproxy 127.0.0.1:9159
+    adb reverse tcp:8081 tcp:9159
+
+fingerprint
+    webdata
+        profile
+            cookies
+            storage
+            other
+
+    sysbase
+        ro.build.version.release = custom:@sys.ro.build.version.release
+        ro.product.manufacturer = custom:@sys.ro.product.manufacturer
+        ro.product.model = custom:@sys.ro.product.model
+        ro.build.version.codename = custom:@sys.ro.build.version.codename
+        ro.build.id = custom:@sys.ro.build.id
+        ro.hardware.egl = custom:@sys.ro.hardware.egl
+
+    http-attributes
+        accept = default:...
+        content-encoding = default:gzip, deflate, br
+        content-language = default[PL], pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7
+        content-length = default
+        content-type = default
+        device-memory = custom:@web.navigator.deviceMemory
+        downlink = default
+        dpr = default
+        ect = default
+        host = default
+        referer = default
+        rtt = default
+        save-data = default:on
+        sec-ch-preferes-color-scheme = default:light
+        sec-ch-ua = custom:@app.chrome.greased_product + app.chrome.greased_version
+        sec-ch-ua-arch = default:empty
+        sec-ch-ua-full-version = custom:@app.chrome.full_version
+        sec-ch-ua-mobile = default:?1
+        sec-ch-ua-model = custom:@sys.ro.product.model
+        sec-ch-ua-platform = default:Android
+        sec-ch-ua-platform-version = default:sys.ro.build.version.release
+        sec-fetch-dest = default:document
+        sec-fetch-mode = default:navigate
+        sec-fetch-site = default:cross-site
+        sec-fetch-user = default:?1
+        upgrade-insecure-requests = default:1
+        user-agent
+            osfamily = default:Linux + Android
+            osver = sys.ro.build.version.release
+            model = sys.ro.product.model
+            chomever = custom:@app.chrome.product
+        viewport-width = default
+
+    js-attributes
+        user-agent
+            osfamily = default:Linux + Android
+            osver = custom:@sys.ro.build.version.release
+            model = custom:@sys.ro.product.model
+            chomever = custom:@app.chrome.product
+
+        platform = default:Linux armv8l
+        cookies-enabled = default:true
+        timezone = default[PL], -60
+        content-language = default[PL], pl-PL,en-US,en
+        canvas = default
+        list-of-fonts = default:...
+        use-of-adblock = default:no
+        do-not-track = default:NC
+        navigator-properties = default:unique
+        build-id = default:not-supported
+        product = default:gecko
+        vendor = default:Google Inc.
+        vendor-sub = default:no-value
+        hardware-concurrency = custom:@web.navigator.hardwareConcurrency
+        java-enabled = default:false
+        device-memory = custom:@web.navigator.deviceMemory
+        list-of-plugins = default:none
+        screen-width = default:360
+        screen-height = default:640
+        screen-depth = default:24
+        screen-available-top = default:0
+        screen-available-left = default:0
+        screen-available-height = default:640
+        screen-available-width = default:360
+        screen-left = default:no-value
+        screen-top = default:no-value
+        permissions = default:timeout
+        webgl-vendor = custom:@sys.gpu.vendor
+        webgl-renderer = custom:@sys.gpu.renderer
+        webgl-data = default:unique
+        webgl-parameters = default:unique
+        use-of-local-storage = default:yes
+        use-of-session-storage = default:yes
+        use-of-indexed-db = default:yes
+        audio-formats = default:no-value
+        audio-context = default:no-value
+        frequency-analyser = default:ok
+        audio-data = default:not-supported
+        video-formats = default:mp4+off+webm-opus+webm-vorbis
+        media-devices = default:audioinput+videoinpt+videoinpt+audiooutput
+        accelerometer = default:no value
+        gyroscope = default:no value
+        proximity-sensor = default:no value
+        keyboard-layout = default:other
+        battery
+            charging = true
+            charging-time = 0
+            discharging-time = 0
+            level = 1
+        connection
+            downlink = default
+            downlink-max = default
+            effectiveType = default
+            rtt = default
+            type = custom:@net.connecion.type
+        key = default:cookie
+        location-bar = default:visible
+        menu-bar = default:visible
+        personal-bar = default:visible
+        status-bar = default:visible
+        tool-bar = default:visible
+        result-state = default:no-value
+        list-of-fonts-flash = default:flash-not-detected
+        screen-resulotion-flash = default:flash-not-detected
+        language-flash = default:flash-not-detected
+        platform-flash = default:flash-not-detected
+
+speedup
+    https://www.problogbooster.com/2011/11/Make-Chrome-Faster-Flags-Speedup-Browsing--Downloading-Fix-Crash-Freezing-Optimization.html
+
+tags
+    https://www.chromium.org/developers/how-tos/get-the-code/working-with-release-branches
