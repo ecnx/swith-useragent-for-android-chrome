@@ -1,0 +1,34 @@
+Purge
+-----
+
+am force-stop org.chromium.chrome
+pm clear org.chromium.chrome
+pm grant org.chromium.chrome android.permission.READ_EXTERNAL_STORAGE
+pm grant org.chromium.chrome android.permission.WRITE_EXTERNAL_STORAGE
+am start -n org.chromium.chrome/com.google.android.apps.chrome.Main
+
+Export
+------
+
+am force-stop org.chromium.chrome
+rm -rf /sdcard/chromium-data
+touch /sdcard/chromium-export-cmd
+am start -n org.chromium.chrome/com.google.android.apps.chrome.Main
+
+Import
+------
+
+am force-stop org.chromium.chrome
+pm clear org.chromium.chrome
+pm grant org.chromium.chrome android.permission.READ_EXTERNAL_STORAGE
+pm grant org.chromium.chrome android.permission.WRITE_EXTERNAL_STORAGE
+touch /sdcard/chromium-import-cmd
+am start -n org.chromium.chrome/com.google.android.apps.chrome.Main
+
+Restart
+-------
+
+am force-stop org.chromium.chrome
+pm grant org.chromium.chrome android.permission.READ_EXTERNAL_STORAGE
+pm grant org.chromium.chrome android.permission.WRITE_EXTERNAL_STORAGE
+am start -n org.chromium.chrome/com.google.android.apps.chrome.Main
