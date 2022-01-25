@@ -5,7 +5,7 @@ apply patch p1.patch with Chromium source code branch 4664
 
 set config like this in /sdcard/chromium-vprops:
 
-'''
+```
     sys.ro.build.version.release=6.9.9
     sys.ro.product.manufacturer=samsung
     sys.ro.product.model=SM-J710X
@@ -21,4 +21,4 @@ set config like this in /sdcard/chromium-vprops:
     net.connecion.type=wifi
     sys.gpu.renderer=Mali-T213
     sys.gpu.vendor=AMR
-  '''
+```
