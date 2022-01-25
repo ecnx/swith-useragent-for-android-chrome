@@ -22,3 +22,9 @@ set config like this in /sdcard/chromium-vprops:
     sys.gpu.renderer=Mali-T213
     sys.gpu.vendor=AMR
 ```
+
+then grant /sdcard permission for the app.
+
+it is possible to load/save cookies to file, see cmds.txt
+
+the browser will connect with socks5 proxy by default over 127.0.0.1:8081
