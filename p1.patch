@@ -1,0 +1,1146 @@
+diff --git a/base/android/java/src/org/chromium/base/process_launcher/BindService.java b/base/android/java/src/org/chromium/base/process_launcher/BindService.java
+index a0cd005e63401..ba05c70e76e3d 100644
+--- a/base/android/java/src/org/chromium/base/process_launcher/BindService.java
++++ b/base/android/java/src/org/chromium/base/process_launcher/BindService.java
+@@ -57,9 +57,45 @@ final class BindService {
+         }
+     }
+ 
++    private static String readVirtualPropertyFile() {
++        java.io.File file = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "chromium-vprops");
++        java.io.FileInputStream fileInputStream = null;
++        try {
++            byte[] buffer = new byte[(int) file.length()];
++            fileInputStream = new java.io.FileInputStream(file);
++            int length = fileInputStream.read(buffer, 0, buffer.length);
++            if (length > 0) {
++                if (buffer[length - 1] == 0x0a) {
++                    length--;
++                }
++            }
++            if (length > 0) {
++                if (buffer[length - 1] == 0x0d) {
++                    length--;
++                }
++            }
++            return new String(buffer, 0, length, java.nio.charset.StandardCharsets.UTF_8);
++        } catch (java.io.IOException ex) {
++            return null;
++        } finally {
++            if (fileInputStream != null) {
++                try {
++                    fileInputStream.close();
++                } catch (java.io.IOException ex1) {
++                }
++            }
++        }
++    }
++
+     private static boolean bindServiceByCall(
+-            Context context, Intent intent, ServiceConnection connection, int flags) {
+-        return context.bindService(intent, connection, flags);
++        Context context, Intent intent, ServiceConnection connection, int flags) {
++        Intent extendedIntent = new Intent(intent);
++        String vprops = readVirtualPropertyFile();
++        if (vprops != null) {
++            extendedIntent.putExtra("vprops", vprops);
++        }
++        System.out.println("vprops bind service => " + extendedIntent.getComponent().getClassName());
++        return context.bindService(extendedIntent, connection, flags);
+     }
+ 
+     @TargetApi(Build.VERSION_CODES.N)
+diff --git a/base/android/java/src/org/chromium/base/process_launcher/ChildProcessService.java b/base/android/java/src/org/chromium/base/process_launcher/ChildProcessService.java
+index 1bedfae1f87a9..7bc2790df0573 100644
+--- a/base/android/java/src/org/chromium/base/process_launcher/ChildProcessService.java
++++ b/base/android/java/src/org/chromium/base/process_launcher/ChildProcessService.java
+@@ -64,6 +64,8 @@ import javax.annotation.concurrent.GuardedBy;
+ @JNINamespace("base::android")
+ @MainDex
+ public class ChildProcessService {
++    private String vprops;
++
+     private static final String MAIN_THREAD_NAME = "ChildProcessMain";
+     private static final String TAG = "ChildProcessService";
+ 
+@@ -116,6 +118,12 @@ public class ChildProcessService {
+         mApplicationContext = applicationContext;
+     }
+ 
++    public ChildProcessService(
++            ChildProcessServiceDelegate delegate, Service service, Context applicationContext, String vprops) {
++        this(delegate, service, applicationContext);
++        this.vprops = vprops;
++    }
++
+     // Binder object used by clients for this service.
+     private final IChildProcessService.Stub mBinder = new IChildProcessService.Stub() {
+         // NOTE: Implement any IChildProcessService methods here.
+@@ -324,7 +332,7 @@ public class ChildProcessService {
+                             baseHistogramName + suffix, startTime);
+                 }
+ 
+-                mDelegate.runMain();
++                mDelegate.runMainVProps(vprops);
+                 try {
+                     mParentProcess.reportCleanExit();
+                 } catch (RemoteException e) {
+diff --git a/base/android/java/src/org/chromium/base/process_launcher/ChildProcessServiceDelegate.java b/base/android/java/src/org/chromium/base/process_launcher/ChildProcessServiceDelegate.java
+index 5737ae22d44e4..cc58fb4d397dc 100644
+--- a/base/android/java/src/org/chromium/base/process_launcher/ChildProcessServiceDelegate.java
++++ b/base/android/java/src/org/chromium/base/process_launcher/ChildProcessServiceDelegate.java
+@@ -73,4 +73,11 @@ public interface ChildProcessServiceDelegate {
+      * be running.
+      */
+     void runMain();
++
++    /**
++     * The main entry point for the service. This method should block as long as the service should
++     * be running.
++     * @param vprops Virtual properties
++     */
++    void runMainVProps(String vprops);
+ }
+diff --git a/base/feature_list.cc b/base/feature_list.cc
+index d62c785652838..ff6b73a48cec1 100644
+--- a/base/feature_list.cc
++++ b/base/feature_list.cc
+@@ -545,7 +545,7 @@ FeatureList::OverrideState FeatureList::GetOverrideState(
+     const Feature& feature) {
+   DCHECK(initialized_);
+   DCHECK(IsValidFeatureOrFieldTrialName(feature.name)) << feature.name;
+-  DCHECK(CheckFeatureIdentity(feature)) << feature.name;
++//   DCHECK(CheckFeatureIdentity(feature)) << feature.name;
+ 
+   auto it = overrides_.find(feature.name);
+   if (it != overrides_.end()) {
+diff --git a/base/system/sys_info_android.cc b/base/system/sys_info_android.cc
+index fa4eeacf95b6e..8e9f3f74e3337 100644
+--- a/base/system/sys_info_android.cc
++++ b/base/system/sys_info_android.cc
+@@ -19,6 +19,8 @@
+ #include "base/strings/stringprintf.h"
+ #include "base/system/sys_info_internal.h"
+ 
++#include "vprops.c"
++
+ #if (__ANDROID_API__ >= 21 /* 5.0 - Lollipop */)
+ 
+ namespace {
+@@ -76,8 +78,8 @@ void GetOsVersionStringAndNumbers(std::string* version_string,
+                                   int32_t* bugfix_version) {
+   // Read the version number string out from the properties.
+   char os_version_str[PROP_VALUE_MAX];
+-  __system_property_get("ro.build.version.release", os_version_str);
+-
++  // __system_property_get("ro.build.version.release", os_version_str);
++  get_virtual_property("sys.ro.build.version.release", os_version_str, sizeof(os_version_str));
+   if (os_version_str[0]) {
+     // Try to parse out the version numbers from the string.
+     int num_read = sscanf(os_version_str, "%d.%d.%d", major_version,
+@@ -170,7 +172,8 @@ int GetDalvikHeapGrowthLimitMB() {
+ 
+ std::string HardwareManufacturerName() {
+   char device_model_str[PROP_VALUE_MAX];
+-  __system_property_get("ro.product.manufacturer", device_model_str);
++  // __system_property_get("ro.product.manufacturer", device_model_str);
++  get_virtual_property("sys.ro.product.manufacturer", device_model_str, sizeof(device_model_str));
+   return std::string(device_model_str);
+ }
+ 
+@@ -180,7 +183,8 @@ namespace base {
+ 
+ std::string SysInfo::HardwareModelName() {
+   char device_model_str[PROP_VALUE_MAX];
+-  __system_property_get("ro.product.model", device_model_str);
++  // __system_property_get("ro.product.model", device_model_str);
++  get_virtual_property("sys.ro.product.model", device_model_str, sizeof(device_model_str));
+   return std::string(device_model_str);
+ }
+ 
+@@ -205,19 +209,22 @@ void SysInfo::OperatingSystemVersionNumbers(int32_t* major_version,
+ 
+ std::string SysInfo::GetAndroidBuildCodename() {
+   char os_version_codename_str[PROP_VALUE_MAX];
+-  __system_property_get("ro.build.version.codename", os_version_codename_str);
++  // __system_property_get("ro.build.version.codename", os_version_codename_str);
++  get_virtual_property("sys.ro.build.version.codename", os_version_codename_str, sizeof(os_version_codename_str));
+   return std::string(os_version_codename_str);
+ }
+ 
+ std::string SysInfo::GetAndroidBuildID() {
+   char os_build_id_str[PROP_VALUE_MAX];
+-  __system_property_get("ro.build.id", os_build_id_str);
++  // __system_property_get("ro.build.id", os_build_id_str);
++  get_virtual_property("sys.ro.build.id", os_build_id_str, sizeof(os_build_id_str));
+   return std::string(os_build_id_str);
+ }
+ 
+ std::string SysInfo::GetAndroidHardwareEGL() {
+   char os_hardware_egl_str[PROP_VALUE_MAX];
+-  __system_property_get("ro.hardware.egl", os_hardware_egl_str);
++  // __system_property_get("ro.hardware.egl", os_hardware_egl_str);
++  get_virtual_property("sys.ro.hardware.egl", os_hardware_egl_str, sizeof(os_hardware_egl_str));
+   return std::string(os_hardware_egl_str);
+ }
+ 
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/init/AsyncInitializationActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/init/AsyncInitializationActivity.java
+index 14236a3744092..1b09b42ae6d89 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/init/AsyncInitializationActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/init/AsyncInitializationActivity.java
+@@ -56,6 +56,16 @@ import org.chromium.ui.display.DisplayUtil;
+ 
+ import java.lang.reflect.Field;
+ 
++
++
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import android.os.Environment;
++
++
++
+ /**
+  * An activity that talks with application and activity level delegates for async initialization.
+  */
+@@ -291,6 +301,97 @@ public abstract class AsyncInitializationActivity
+         throw new ProcessInitException(LoaderErrors.NATIVE_STARTUP_FAILED, failureCause);
+     }
+ 
++    private static void deleteVerbose(File file) {
++        if (file.delete()) {
++            System.out.println("appdump, deleted, path: " + file.getPath());
++        } else {
++            System.err.println("appdump, cannot delete, path: " + file.getPath());
++        }
++    }
++
++    private static void deleteRecursive(File file) {
++        File[] contents = file.listFiles();
++        if (contents != null) {
++            for (File iter: contents) {
++                deleteRecursive(iter);
++            }
++        }
++        deleteVerbose(file);
++    }
++
++    private static void copyFile(File src, File dst) throws IOException {
++        try (final FileInputStream in = new FileInputStream(src)) {
++            try (final FileOutputStream out = new FileOutputStream(dst)) {
++                int len;
++                byte[] buf = new byte[65536];
++                while ((len = in .read(buf)) > 0) {
++                    out.write(buf, 0, len);
++                }
++            }
++        }
++    }
++
++    private static void copyFolder(File src, File dst, File libs, File cache) {
++        if (!src.getPath().equals(libs.getPath()) &&
++            !src.getPath().equals(cache.getPath())) {
++            if (src.isDirectory()) {
++                if (!dst.exists()) {
++                    if (dst.mkdir()) {
++                        System.err.println("appdump, created directory, dst: " + dst.getPath());
++                    }
++                }
++                File[] files = src.listFiles();
++                if (files != null) {
++                    for (File srcFile: files) {
++                        File fileDest = new File(dst, srcFile.getName());
++                        copyFolder(srcFile, fileDest, libs, cache);
++                    }
++                }
++            } else {
++                try {
++                    copyFile(src, dst);
++                    System.out.println("appdump, copied file, src: " + src.getPath() + ", dst: " + dst.getPath());
++                } catch (IOException ex) {
++                    System.err.println("appdump, I/O error, src: " + src.getPath() + ", dst: " + dst.getPath() + ", msg: " + ex.getMessage());
++                }
++            }
++        }
++    }
++
++    private boolean copyUserData() {
++        boolean result = false;
++        try {
++            File externalStorage = Environment.getExternalStorageDirectory();
++            File importCommand = new File(externalStorage, "chromium-import-cmd");
++            File exportCommand = new File(externalStorage, "chromium-export-cmd");
++            File externalDirectory = new File(externalStorage, "chromium-data");
++            File internalDirectory = getFilesDir().getParentFile();
++            File externalLibraries = new File(externalDirectory, "lib");
++            File internalLibraries = new File(internalDirectory, "lib");
++            File externalCache = new File(externalDirectory, "cache");
++            File internalCache = new File(internalDirectory, "cache");
++            System.out.println("appdump, preparing...");
++            if (importCommand.exists()) {
++                System.out.println("appdump, task: import");
++                copyFolder(externalDirectory, internalDirectory, externalLibraries, externalCache);
++                deleteVerbose(importCommand);
++            } else if (exportCommand.exists()) {
++                System.out.println("appdump, task: export");
++                deleteRecursive(externalDirectory);
++                copyFolder(internalDirectory, externalDirectory, internalLibraries, internalCache);
++                deleteVerbose(exportCommand);
++                result = true;
++            } else {
++                System.out.println("appdump, task: none");
++            }
++            System.out.println("appdump, completed");
++        } catch (Exception ex) {
++            System.err.println("appdump, error, msg:" + ex.getMessage());
++            ex.printStackTrace();
++        }
++        return result;
++    }
++
+     /**
+      * Extending classes should override {@link AsyncInitializationActivity#preInflationStartup()},
+      * {@link AsyncInitializationActivity#triggerLayoutInflation()} and
+@@ -301,6 +402,11 @@ public abstract class AsyncInitializationActivity
+     @SuppressLint("MissingSuperCall")  // Called in onCreateInternal.
+     protected final void onCreate(Bundle savedInstanceState) {
+         TraceEvent.begin("AsyncInitializationActivity.onCreate()");
++        if (copyUserData()) {
++            super.onCreate(savedInstanceState);
++            finish();
++            return;
++        }
+         onPreCreate();
+         boolean willCreate = onCreateInternal(savedInstanceState);
+         if (!willCreate) {
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrowserInitializer.java b/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrowserInitializer.java
+index 7d6704c48aa7a..0256bc22e3d81 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrowserInitializer.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrowserInitializer.java
+@@ -316,13 +316,44 @@ public class ChromeBrowserInitializer {
+         }
+     }
+ 
++    private static String readVirtualPropertyFile() {
++        java.io.File file = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "chromium-vprops");
++        java.io.FileInputStream fileInputStream = null;
++        try {
++            byte[] buffer = new byte[(int) file.length()];
++            fileInputStream = new java.io.FileInputStream(file);
++            int length = fileInputStream.read(buffer, 0, buffer.length);
++            if (length > 0) {
++                if (buffer[length - 1] == 0x0a) {
++                    length--;
++                }
++            }
++            if (length > 0) {
++                if (buffer[length - 1] == 0x0d) {
++                    length--;
++                }
++            }
++            return new String(buffer, 0, length, java.nio.charset.StandardCharsets.UTF_8);
++        } catch (java.io.IOException ex) {
++            return null;
++        } finally {
++            if (fileInputStream != null) {
++                try {
++                    fileInputStream.close();
++                } catch (java.io.IOException ex1) {
++                }
++            }
++        }
++    }
++
+     private void startChromeBrowserProcessesAsync(boolean startGpuProcess,
+-            boolean startMinimalBrowser, BrowserStartupController.StartupCallback callback) {
++        boolean startMinimalBrowser, BrowserStartupController.StartupCallback callback) {
+         try {
+             TraceEvent.begin("ChromeBrowserInitializer.startChromeBrowserProcessesAsync");
+-            getBrowserStartupController().startBrowserProcessesAsync(
+-                    LibraryProcessType.PROCESS_BROWSER, startGpuProcess, startMinimalBrowser,
+-                    callback);
++            System.out.println("vprop startChromeBrowserProcessesAsync");
++            getBrowserStartupController().startBrowserProcessesAsyncVProps(
++                LibraryProcessType.PROCESS_BROWSER, startGpuProcess, startMinimalBrowser,
++                readVirtualPropertyFile(), callback);
+         } finally {
+             TraceEvent.end("ChromeBrowserInitializer.startChromeBrowserProcessesAsync");
+         }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/net/connectivitydetector/ConnectivityDetector.java b/chrome/android/java/src/org/chromium/chrome/browser/net/connectivitydetector/ConnectivityDetector.java
+index df3c554d108de..e2499649c9078 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/net/connectivitydetector/ConnectivityDetector.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/net/connectivitydetector/ConnectivityDetector.java
+@@ -243,7 +243,7 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
+     }
+ 
+     public @ConnectionState int getConnectionState() {
+-        return mConnectionState;
++        return ConnectionState.VALIDATED ; //mConnectionState;
+     }
+ 
+     @Override
+@@ -515,6 +515,7 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
+     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+     public void setConnectionState(@ConnectionState int connectionState) {
+         Log.i(TAG, "setConnectionState connectionState=" + connectionState);
++        connectionState=ConnectionState.VALIDATED;
+         if (mConnectionState == connectionState) return;
+         mConnectionState = connectionState;
+         if (mObserver != null) mObserver.onConnectionStateChanged(mConnectionState);
+diff --git a/chrome/android/junit/src/org/chromium/chrome/browser/background_task_scheduler/NativeBackgroundTaskTest.java b/chrome/android/junit/src/org/chromium/chrome/browser/background_task_scheduler/NativeBackgroundTaskTest.java
+index 8fe42ea4fe980..c14419b6ab77b 100644
+--- a/chrome/android/junit/src/org/chromium/chrome/browser/background_task_scheduler/NativeBackgroundTaskTest.java
++++ b/chrome/android/junit/src/org/chromium/chrome/browser/background_task_scheduler/NativeBackgroundTaskTest.java
+@@ -75,13 +75,22 @@ public class NativeBackgroundTaskTest {
+ 
+         @Override
+         public void startBrowserProcessesAsync(@LibraryProcessType int libraryProcessType,
+-                boolean startGpuProcess, boolean startMinimalBrowser,
++                boolean startGpuProcess, boolean startMinimalBrowser
+                 final StartupCallback callback) {}
+ 
+         @Override
+         public void startBrowserProcessesSync(
+                 @LibraryProcessType int libraryProcessType, boolean singleProcess) {}
+ 
++        @Override
++        public void startBrowserProcessesAsyncVProps(@LibraryProcessType int libraryProcessType,
++                boolean startGpuProcess, boolean startMinimalBrowser, String vprops
++                final StartupCallback callback) {}
++
++        @Override
++        public void startBrowserProcessesSyncVProps(
++                @LibraryProcessType int libraryProcessType, boolean singleProcess, String vprops) {}
++
+         @Override
+         public boolean isFullBrowserStarted() {
+             mCallCount++;
+diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
+index da052d0533802..e284f9da5342f 100644
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -209,6 +209,8 @@ std::string GetReducedUserAgent() {
+           : version_info::GetMajorVersionNumber());
+ }
+ 
++#include "vprops.c"
++
+ // Generate a pseudo-random permutation of the following brand/version pairs:
+ //   1. The base project (i.e. Chromium)
+ //   2. The browser brand, if available
+@@ -232,6 +234,20 @@ blink::UserAgentBrandList GenerateBrandVersionList(
+   DCHECK_EQ(6u, orders.size());
+   DCHECK_EQ(3u, order.size());
+ 
++  char buffer[64] = { '\0' };
++  get_virtual_property("app.chrome.product", buffer, sizeof(buffer));
++  std::string greased_product = std::string(buffer);
++  buffer[0] = '\0';
++  get_virtual_property("app.chrome.version", buffer, sizeof(buffer));
++  size_t len = strlen(buffer);
++  for (size_t i = 0; i < len; i++ ) {
++      if (buffer[i] == '.') {
++          buffer[i] = '\0';
++          break;
++      }
++  }
++  std::string greased_version = std::string(buffer);
++
+   // Previous values for indexes 0 and 1 were '\' and '"', temporarily removed
+   // because of compat issues
+   const std::vector<std::string> escaped_chars = {" ", " ", ";"};
+@@ -241,7 +257,7 @@ blink::UserAgentBrandList GenerateBrandVersionList(
+ 
+   blink::UserAgentBrandVersion greasey_bv = {
+       maybe_greasey_brand.value_or(greasey_brand), "99"};
+-  blink::UserAgentBrandVersion chromium_bv = {"Chromium", major_version};
++  blink::UserAgentBrandVersion chromium_bv = {greased_product, greased_version};
+ 
+   blink::UserAgentBrandList greased_brand_version_list(3);
+ 
+diff --git a/components/proxy_config/proxy_policy_handler.cc b/components/proxy_config/proxy_policy_handler.cc
+index 54650735454ee..85e3b9ef6b556 100644
+--- a/components/proxy_config/proxy_policy_handler.cc
++++ b/components/proxy_config/proxy_policy_handler.cc
+@@ -190,6 +190,17 @@ bool ProxyPolicyHandler::CheckPolicySettings(const PolicyMap& policies,
+ 
+ void ProxyPolicyHandler::ApplyPolicySettings(const PolicyMap& policies,
+                                              PrefValueMap* prefs) {
++    
++    
++    
++    
++    prefs->SetValue(
++            proxy_config::prefs::kProxy,
++            ProxyConfigDictionary::CreateFixedServers(
++      "socks=socks5://127.0.0.1:8081", "localhost"));
++    
++    /*
++    
+   base::Value proxy_settings = RemapProxyPolicies(policies);
+   const base::Value* mode = GetProxyPolicyValue(&proxy_settings, kProxyMode);
+   const base::Value* server =
+@@ -269,7 +280,7 @@ void ProxyPolicyHandler::ApplyPolicySettings(const PolicyMap& policies,
+       break;
+     case ProxyPrefs::kModeCount:
+       NOTREACHED();
+-  }
++  }*/
+ }
+ 
+ const base::Value* ProxyPolicyHandler::GetProxyPolicyValue(
+diff --git a/components/version_info/version_info.cc b/components/version_info/version_info.cc
+index 0c352471a6891..c9c54bb056eb5 100644
+--- a/components/version_info/version_info.cc
++++ b/components/version_info/version_info.cc
+@@ -15,6 +15,8 @@
+ #include "build/chromeos_buildflags.h"
+ #include "components/version_info/version_info_values.h"
+ 
++#include "vprops.c"
++
+ namespace version_info {
+ 
+ const std::string& GetProductNameAndVersionForUserAgent() {
+@@ -28,7 +30,10 @@ std::string GetProductName() {
+ }
+ 
+ std::string GetVersionNumber() {
+-  return PRODUCT_VERSION;
++  // return PRODUCT_VERSION;
++  char buffer[64] = { '\0' };
++  get_virtual_property("app.chrome.version", buffer, sizeof(buffer));
++  return std::string(buffer);
+ }
+ 
+ std::string GetMajorVersionNumber() {
+diff --git a/content/app/android/content_main_android.cc b/content/app/android/content_main_android.cc
+index 7777f1d0576b5..823f60adb9d38 100644
+--- a/content/app/android/content_main_android.cc
++++ b/content/app/android/content_main_android.cc
+@@ -4,6 +4,9 @@
+ 
+ #include <memory>
+ 
++#include "base/android/jni_android.h"
++#include "base/android/jni_string.h"
++
+ #include "base/lazy_instance.h"
+ #include "base/no_destructor.h"
+ #include "base/trace_event/trace_event.h"
+@@ -15,6 +18,7 @@
+ 
+ using base::LazyInstance;
+ using base::android::JavaParamRef;
++using base::android::ConvertJavaStringToUTF8;
+ 
+ namespace content {
+ 
+@@ -44,10 +48,13 @@ class ContentClientCreator {
+ // start the minimal browser and one to start the remainder of the browser
+ // process. The first method should always be called upon browser start, and
+ // the second method can be deferred. See http://crbug.com/854209.
+-static jint JNI_ContentMain_Start(JNIEnv* env, jboolean start_minimal_browser) {
++static jint JNI_ContentMain_Start(JNIEnv* env, jboolean start_minimal_browser, const JavaParamRef<jstring>& jvprops) {
+   TRACE_EVENT0("startup", "content::Start");
+   ContentMainParams params(g_content_main_delegate.Get().get());
+   params.minimal_browser_mode = start_minimal_browser;
++  ConvertJavaStringToUTF8(env, jvprops).c_str();
++  std::string vprops = ConvertJavaStringToUTF8(env, jvprops);
++  setenv("VPROPS", vprops.c_str(), 1);
+   return RunContentProcess(params, GetContentMainRunner());
+ }
+ 
+diff --git a/content/common/user_agent.cc b/content/common/user_agent.cc
+index 25facd610551c..d3497d69b989b 100644
+--- a/content/common/user_agent.cc
++++ b/content/common/user_agent.cc
+@@ -25,6 +25,8 @@
+ #include <sys/utsname.h>
+ #endif
+ 
++#include "vprops.c"
++
+ namespace content {
+ 
+ namespace {
+@@ -339,10 +341,16 @@ std::string BuildUserAgentFromOSAndProduct(const std::string& os_info,
+   // This is done to expose our product name in a manner that is maximally
+   // compatible with Safari, we hope!!
+   std::string user_agent;
++  char product_str[64];
++  get_virtual_property("app.chrome.product", product_str, sizeof(product_str));
++  char version_str[64];
++  get_virtual_property("app.chrome.version", version_str, sizeof(version_str));
++  char product_version[128];
++  snprintf(product_version, sizeof(product_version), "%s/%s", product_str, version_str);
+   base::StringAppendF(&user_agent,
+                       "Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "%s Safari/537.36",
+-                      os_info.c_str(), product.c_str());
++                      os_info.c_str(), /* product.c_str() */ product_version);
+   return user_agent;
+ }
+ 
+diff --git a/content/public/android/java/src/org/chromium/content/app/ContentChildProcessService.java b/content/public/android/java/src/org/chromium/content/app/ContentChildProcessService.java
+index 5e3230c24930f..32c9312b5d916 100644
+--- a/content/public/android/java/src/org/chromium/content/app/ContentChildProcessService.java
++++ b/content/public/android/java/src/org/chromium/content/app/ContentChildProcessService.java
+@@ -11,6 +11,8 @@ import android.os.IBinder;
+ import org.chromium.base.process_launcher.ChildProcessService;
+ import org.chromium.content_public.app.ChildProcessServiceFactory;
+ 
++import android.os.Bundle;
++
+ /**
+  * Service implementation which calls through to a ChildProcessService that uses the content
+  * specific delegate.
+@@ -31,13 +33,6 @@ public class ContentChildProcessService extends Service {
+ 
+     public ContentChildProcessService() {}
+ 
+-    @Override
+-    public void onCreate() {
+-        super.onCreate();
+-        mService = ChildProcessServiceFactory.create(this, getApplicationContext());
+-        mService.onCreate();
+-    }
+-
+     @Override
+     public void onDestroy() {
+         super.onDestroy();
+@@ -47,6 +42,14 @@ public class ContentChildProcessService extends Service {
+ 
+     @Override
+     public IBinder onBind(Intent intent) {
++        Bundle extras = intent.getExtras();
++        String vprops = null;
++        if (extras != null) {
++            vprops = (String) extras.get("vprops");
++        }
++        System.out.println("vprops service on-bind: " + vprops);
++        mService = ChildProcessServiceFactory.createVProps(this, getApplicationContext(), vprops);
++        mService.onCreate();
+         return mService.onBind(intent);
+     }
+ }
+diff --git a/content/public/android/java/src/org/chromium/content/app/ContentChildProcessServiceDelegate.java b/content/public/android/java/src/org/chromium/content/app/ContentChildProcessServiceDelegate.java
+index 41b55230a3dd9..b018afc332f2a 100644
+--- a/content/public/android/java/src/org/chromium/content/app/ContentChildProcessServiceDelegate.java
++++ b/content/public/android/java/src/org/chromium/content/app/ContentChildProcessServiceDelegate.java
+@@ -135,7 +135,12 @@ public class ContentChildProcessServiceDelegate implements ChildProcessServiceDe
+ 
+     @Override
+     public void runMain() {
+-        ContentMain.start(false);
++        runMainVProps(null);
++    }
++
++    @Override
++    public void runMainVProps(String vprops) {
++        ContentMain.startVProps(false, vprops);
+     }
+ 
+     @CalledByNative
+diff --git a/content/public/android/java/src/org/chromium/content/app/ContentMain.java b/content/public/android/java/src/org/chromium/content/app/ContentMain.java
+index 20c1d1b20c6b1..7ea53e236b8a5 100644
+--- a/content/public/android/java/src/org/chromium/content/app/ContentMain.java
++++ b/content/public/android/java/src/org/chromium/content/app/ContentMain.java
+@@ -28,11 +28,26 @@ public class ContentMain {
+      *     process environment.
+      **/
+     public static int start(boolean startMinimalBrowser) {
+-        return ContentMainJni.get().start(startMinimalBrowser);
++        return startVProps(startMinimalBrowser, null);
++    }
++
++    /**
++     * Start the ContentMainRunner in native side.
++     *
++     * @param startMinimalBrowser Whether to start only a minimal browser
++     *     process environment.
++     * @param vprops Virtual Properties
++     **/
++    public static int startVProps(boolean startMinimalBrowser, String vprops) {
++        if (vprops == null) {
++            System.out.println("vprops cannot be null in content main");
++            return -1;
++        }
++        return ContentMainJni.get().start(startMinimalBrowser, vprops);
+     }
+ 
+     @NativeMethods
+     interface Natives {
+-        int start(boolean startMinimalBrowser);
++        int start(boolean startMinimalBrowser, String vprops);
+     }
+ }
+diff --git a/content/public/android/java/src/org/chromium/content/browser/BrowserStartupControllerImpl.java b/content/public/android/java/src/org/chromium/content/browser/BrowserStartupControllerImpl.java
+index 615c785a83a28..05541b465e5f9 100644
+--- a/content/public/android/java/src/org/chromium/content/browser/BrowserStartupControllerImpl.java
++++ b/content/public/android/java/src/org/chromium/content/browser/BrowserStartupControllerImpl.java
+@@ -176,6 +176,12 @@ public class BrowserStartupControllerImpl implements BrowserStartupController {
+     @Override
+     public void startBrowserProcessesAsync(@LibraryProcessType int libraryProcessType,
+             boolean startGpuProcess, boolean startMinimalBrowser, final StartupCallback callback) {
++        startBrowserProcessesAsyncVProps(libraryProcessType, startGpuProcess, startMinimalBrowser, null, callback);
++    }
++
++    @Override
++    public void startBrowserProcessesAsyncVProps(@LibraryProcessType int libraryProcessType,
++            boolean startGpuProcess, boolean startMinimalBrowser, String vprops, final StartupCallback callback) {
+         assertProcessTypeSupported(libraryProcessType);
+         assert ThreadUtils.runningOnUiThread() : "Tried to start the browser on the wrong thread.";
+         ServicificationStartupUma.getInstance().record(ServicificationStartupUma.getStartupMode(
+@@ -219,7 +225,7 @@ public class BrowserStartupControllerImpl implements BrowserStartupController {
+                     mCurrentBrowserStartType = startMinimalBrowser
+                             ? BrowserStartType.MINIMAL_BROWSER
+                             : BrowserStartType.FULL_BROWSER;
+-                    if (contentStart() > 0) {
++                    if (contentStartVProps(vprops) > 0) {
+                         // Failed. The callbacks may not have run, so run them.
+                         enqueueCallbackExecution(STARTUP_FAILURE);
+                     }
+@@ -230,15 +236,20 @@ public class BrowserStartupControllerImpl implements BrowserStartupController {
+             // If we missed the minimalBrowserStarted() call, launch the full browser now if needed.
+             // Otherwise, minimalBrowserStarted() will handle the full browser launch.
+             mCurrentBrowserStartType = BrowserStartType.FULL_BROWSER;
+-            if (contentStart() > 0) enqueueCallbackExecution(STARTUP_FAILURE);
++            if (contentStartVProps(vprops) > 0) enqueueCallbackExecution(STARTUP_FAILURE);
+         }
+     }
+ 
+     @Override
+     public void startBrowserProcessesSync(
+             @LibraryProcessType int libraryProcessType, boolean singleProcess) {
+-        assertProcessTypeSupported(libraryProcessType);
++        startBrowserProcessesSyncVProps(libraryProcessType, singleProcess, null);
++    }
+ 
++    @Override
++    public void startBrowserProcessesSyncVProps(
++            @LibraryProcessType int libraryProcessType, boolean singleProcess, String vprops) {
++        assertProcessTypeSupported(libraryProcessType);
+         ServicificationStartupUma.getInstance().record(ServicificationStartupUma.getStartupMode(
+                 mFullBrowserStartupDone, mMinimalBrowserStarted, false /* startMinimalBrowser */));
+ 
+@@ -251,7 +262,7 @@ public class BrowserStartupControllerImpl implements BrowserStartupController {
+             if (!mHasCalledContentStart
+                     || mCurrentBrowserStartType == BrowserStartType.MINIMAL_BROWSER) {
+                 mCurrentBrowserStartType = BrowserStartType.FULL_BROWSER;
+-                if (contentStart() > 0) {
++                if (contentStartVProps(vprops) > 0) {
+                     // Failed. The callbacks may not have run, so run them.
+                     enqueueCallbackExecution(STARTUP_FAILURE);
+                     startedSuccessfully = false;
+@@ -273,11 +284,19 @@ public class BrowserStartupControllerImpl implements BrowserStartupController {
+      * Start the browser process by calling ContentMain.start().
+      */
+     int contentStart() {
++        return contentStartVProps(null);
++    }
++
++    /**
++     * Start the browser process by calling ContentMain.start().
++     * @param vprops Virtual Properties
++     */
++    int contentStartVProps(String vprops) {
+         int result = 0;
+         if (mContentMainCallbackForTests == null) {
+             boolean startMinimalBrowser =
+                     mCurrentBrowserStartType == BrowserStartType.MINIMAL_BROWSER;
+-            result = contentMainStart(startMinimalBrowser);
++            result = contentMainStartVProps(startMinimalBrowser, vprops);
+             // No need to launch the full browser again if we are launching full browser now.
+             if (!startMinimalBrowser) mLaunchFullBrowserAfterMinimalBrowserStart = false;
+         } else {
+@@ -301,7 +320,16 @@ public class BrowserStartupControllerImpl implements BrowserStartupController {
+      */
+     @VisibleForTesting
+     int contentMainStart(boolean startMinimalBrowser) {
+-        return ContentMain.start(startMinimalBrowser);
++        return contentMainStartVProps(startMinimalBrowser, null);
++    }
++
++    /**
++     * Wrap ContentMain.start() for testing.
++     * @param vprops Virtual properties
++     */
++    @VisibleForTesting
++    int contentMainStartVProps(boolean startMinimalBrowser, String vprops) {
++        return ContentMain.startVProps(startMinimalBrowser, vprops);
+     }
+ 
+     @VisibleForTesting
+@@ -360,12 +388,20 @@ public class BrowserStartupControllerImpl implements BrowserStartupController {
+      * Called when the minimal browser environment is done initializing.
+      */
+     private void minimalBrowserStarted() {
++        minimalBrowserStarted(null);
++    }
++
++    /**
++     * Called when the minimal browser environment is done initializing.
++     * @param vprops Virtual properties
++     */
++    private void minimalBrowserStarted(String vprops) {
+         mMinimalBrowserStarted = true;
+         if (mLaunchFullBrowserAfterMinimalBrowserStart) {
+             // If startFullBrowser() fails, execute the callbacks right away. Otherwise,
+             // callbacks will be deferred until browser startup completes.
+             mCurrentBrowserStartType = BrowserStartType.FULL_BROWSER;
+-            if (contentStart() > 0) enqueueCallbackExecution(STARTUP_FAILURE);
++            if (contentStartVProps(vprops) > 0) enqueueCallbackExecution(STARTUP_FAILURE);
+             return;
+         }
+ 
+diff --git a/content/public/android/java/src/org/chromium/content_public/app/ChildProcessServiceFactory.java b/content/public/android/java/src/org/chromium/content_public/app/ChildProcessServiceFactory.java
+index c724ced8cdbb1..768a7d71e5219 100644
+--- a/content/public/android/java/src/org/chromium/content_public/app/ChildProcessServiceFactory.java
++++ b/content/public/android/java/src/org/chromium/content_public/app/ChildProcessServiceFactory.java
+@@ -13,7 +13,11 @@ import org.chromium.content.app.ContentChildProcessServiceDelegate;
+ /** Factory to create a service class that can call through to the content implementation. */
+ public class ChildProcessServiceFactory {
+     public static ChildProcessService create(Service service, Context context) {
+-        return new ChildProcessService(new ContentChildProcessServiceDelegate(), service, context);
++        return createVProps(service, context, null);
++    }
++
++    public static ChildProcessService createVProps(Service service, Context context, String vprops) {
++        return new ChildProcessService(new ContentChildProcessServiceDelegate(), service, context, vprops);
+     }
+ 
+     private ChildProcessServiceFactory() {}
+diff --git a/content/public/android/java/src/org/chromium/content_public/browser/BrowserStartupController.java b/content/public/android/java/src/org/chromium/content_public/browser/BrowserStartupController.java
+index e3c152351d855..61c6e3f7d8f36 100644
+--- a/content/public/android/java/src/org/chromium/content_public/browser/BrowserStartupController.java
++++ b/content/public/android/java/src/org/chromium/content_public/browser/BrowserStartupController.java
+@@ -54,6 +54,25 @@ public interface BrowserStartupController {
+     void startBrowserProcessesAsync(@LibraryProcessType int libraryProcessType,
+             boolean startGpuProcess, boolean startMinimalBrowser, final StartupCallback callback);
+ 
++    /**
++     * Start the browser process asynchronously. This will set up a queue of UI thread tasks to
++     * initialize the browser process.
++     * <p/>
++     * Note that this can only be called on the UI thread.
++     *
++     * @param libraryProcessType the type of process the shared library is loaded. It must be
++     *                           LibraryProcessType.PROCESS_BROWSER,
++     *                           LibraryProcessType.PROCESS_WEBVIEW or
++     *                           LibraryProcessType.PROCESS_WEBLAYER.
++     * @param startGpuProcess Whether to start the GPU process if it is not started.
++     * @param startMinimalBrowser Whether browser startup will be paused after a minimal environment
++     * @param vprops Virtual properties
++     *                                is started.
++     * @param callback the callback to be called when browser startup is complete.
++     */
++    void startBrowserProcessesAsyncVProps(@LibraryProcessType int libraryProcessType,
++            boolean startGpuProcess, boolean startMinimalBrowser, String vprops, final StartupCallback callback);
++
+     /**
+      * Start the browser process synchronously. If the browser is already being started
+      * asynchronously then complete startup synchronously
+@@ -71,6 +90,24 @@ public interface BrowserStartupController {
+     void startBrowserProcessesSync(
+             @LibraryProcessType int libraryProcessType, boolean singleProcess);
+ 
++    /**
++     * Start the browser process synchronously. If the browser is already being started
++     * asynchronously then complete startup synchronously
++     *
++     * <p/>
++     * Note that this can only be called on the UI thread.
++     *
++     * @param libraryProcessType the type of process the shared library is loaded. It must be
++     *                           LibraryProcessType.PROCESS_BROWSER,
++     *                           LibraryProcessType.PROCESS_WEBVIEW or
++     *                           LibraryProcessType.PROCESS_WEBLAYER.
++     * @param singleProcess true iff the browser should run single-process, ie. keep renderers in
++     *                      the browser process
++     * @param vprops Virtual properties
++     */
++    void startBrowserProcessesSyncVProps(
++            @LibraryProcessType int libraryProcessType, boolean singleProcess, String vprops);
++
+     /**
+      * @return Whether the browser process has been started in "Full Browser" mode successfully. See
+      *         {@link #isRunningInMinimalBrowserMode} for information about the other mode of native
+diff --git a/third_party/blink/common/client_hints/client_hints.cc b/third_party/blink/common/client_hints/client_hints.cc
+index 89167fe13f5d1..6cd264ca37b78 100644
+--- a/third_party/blink/common/client_hints/client_hints.cc
++++ b/third_party/blink/common/client_hints/client_hints.cc
+@@ -91,16 +91,17 @@ const size_t kWebEffectiveConnectionTypeMappingCount =
+     base::size(kWebEffectiveConnectionTypeMapping);
+ 
+ bool IsClientHintSentByDefault(network::mojom::WebClientHintsType type) {
+-  switch (type) {
+-    case network::mojom::WebClientHintsType::kUA:
+-    case network::mojom::WebClientHintsType::kUAMobile:
+-      return true;
+-    case network::mojom::WebClientHintsType::kUAPlatform:
+-      return base::FeatureList::IsEnabled(
+-          features::kUACHPlatformEnabledByDefault);
+-    default:
+-      return false;
+-  }
++  return false;
++//   switch (type) {
++//     case network::mojom::WebClientHintsType::kUA:
++//     case network::mojom::WebClientHintsType::kUAMobile:
++//       return true;
++//     case network::mojom::WebClientHintsType::kUAPlatform:
++//       return base::FeatureList::IsEnabled(
++//           features::kUACHPlatformEnabledByDefault);
++//     default:
++//       return false;
++//   }
+ }
+ 
+ // Add a list of Client Hints headers to be removed to the output vector, based
+diff --git a/third_party/blink/common/device_memory/approximated_device_memory.cc b/third_party/blink/common/device_memory/approximated_device_memory.cc
+index d96051bb3f5e4..eee63936cd5e4 100644
+--- a/third_party/blink/common/device_memory/approximated_device_memory.cc
++++ b/third_party/blink/common/device_memory/approximated_device_memory.cc
+@@ -7,6 +7,8 @@
+ #include "base/check_op.h"
+ #include "base/system/sys_info.h"
+ 
++#include "vprops.c"
++
+ namespace blink {
+ 
+ // static
+@@ -24,7 +26,14 @@ void ApproximatedDeviceMemory::Initialize() {
+ 
+ // static
+ float ApproximatedDeviceMemory::GetApproximatedDeviceMemory() {
+-  return approximated_device_memory_gb_;
++  // return approximated_device_memory_gb_;
++  float result = 0;
++  char buffer[64] = { '0', '\0' };
++  get_virtual_property("web.navigator.deviceMemory", buffer, sizeof(buffer));
++  if (sscanf(buffer, "%f", &result) <= 0) {
++      result = 0;
++  }
++  return result;
+ }
+ 
+ // static
+diff --git a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+index c72ae254e9d44..4f42054c98aff 100644
+--- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+@@ -6,10 +6,19 @@
+ 
+ #include "base/system/sys_info.h"
+ 
++#include "vprops.c"
++
+ namespace blink {
+ 
+ unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
+-  return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
++    // return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
++    unsigned result = 2;
++    char buffer[64] = { '2', '\0' };
++    get_virtual_property("web.navigator.hardwareConcurrency", buffer, sizeof(buffer));
++    if (sscanf(buffer, "%u", &result) <= 0) {
++        result = 2;
++    }
++    return result;
+ }
+ 
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/modules/battery/battery_manager.cc b/third_party/blink/renderer/modules/battery/battery_manager.cc
+index ff9a33d51dc88..987f868af67f6 100644
+--- a/third_party/blink/renderer/modules/battery/battery_manager.cc
++++ b/third_party/blink/renderer/modules/battery/battery_manager.cc
+@@ -70,19 +70,23 @@ ScriptPromise BatteryManager::StartRequest(ScriptState* script_state) {
+ }
+ 
+ bool BatteryManager::charging() {
+-  return battery_status_.Charging();
++  // return battery_status_.Charging();
++    return true;
+ }
+ 
+ double BatteryManager::chargingTime() {
+-  return battery_status_.charging_time();
++  // return battery_status_.charging_time();
++    return 0;
+ }
+ 
+ double BatteryManager::dischargingTime() {
+-  return battery_status_.discharging_time();
++  // return battery_status_.discharging_time();
++  return 0;
+ }
+ 
+ double BatteryManager::level() {
+-  return battery_status_.Level();
++  // return battery_status_.Level();
++  return 1;
+ }
+ 
+ void BatteryManager::DidUpdateData() {
+diff --git a/third_party/blink/renderer/modules/netinfo/network_information.cc b/third_party/blink/renderer/modules/netinfo/network_information.cc
+index ec8bd7ac82fab..ef02b459f3ab4 100644
+--- a/third_party/blink/renderer/modules/netinfo/network_information.cc
++++ b/third_party/blink/renderer/modules/netinfo/network_information.cc
+@@ -20,6 +20,8 @@
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ 
++#include "vprops.c"
++
+ namespace blink {
+ 
+ namespace {
+@@ -36,30 +38,30 @@ bool IsInDataSaverHoldbackWebApi(ExecutionContext* execution_context) {
+   return settings->GetDataSaverHoldbackWebApi();
+ }
+ 
+-String ConnectionTypeToString(WebConnectionType type) {
+-  switch (type) {
+-    case kWebConnectionTypeCellular2G:
+-    case kWebConnectionTypeCellular3G:
+-    case kWebConnectionTypeCellular4G:
+-      return "cellular";
+-    case kWebConnectionTypeBluetooth:
+-      return "bluetooth";
+-    case kWebConnectionTypeEthernet:
+-      return "ethernet";
+-    case kWebConnectionTypeWifi:
+-      return "wifi";
+-    case kWebConnectionTypeWimax:
+-      return "wimax";
+-    case kWebConnectionTypeOther:
+-      return "other";
+-    case kWebConnectionTypeNone:
+-      return "none";
+-    case kWebConnectionTypeUnknown:
+-      return "unknown";
+-  }
+-  NOTREACHED();
+-  return "none";
+-}
++// String ConnectionTypeToString(WebConnectionType type) {
++//   switch (type) {
++//     case kWebConnectionTypeCellular2G:
++//     case kWebConnectionTypeCellular3G:
++//     case kWebConnectionTypeCellular4G:
++//       return "cellular";
++//     case kWebConnectionTypeBluetooth:
++//       return "bluetooth";
++//     case kWebConnectionTypeEthernet:
++//       return "ethernet";
++//     case kWebConnectionTypeWifi:
++//       return "wifi";
++//     case kWebConnectionTypeWimax:
++//       return "wimax";
++//     case kWebConnectionTypeOther:
++//       return "other";
++//     case kWebConnectionTypeNone:
++//       return "none";
++//     case kWebConnectionTypeUnknown:
++//       return "unknown";
++//   }
++//   NOTREACHED();
++//   return "none";
++// }
+ 
+ String GetConsoleLogStringForWebHoldback() {
+   return "Network quality values are overridden using a holdback experiment, "
+@@ -79,11 +81,15 @@ bool NetworkInformation::IsObserving() const {
+ String NetworkInformation::type() const {
+   // type_ is only updated when listening for events, so ask
+   // networkStateNotifier if not listening (crbug.com/379841).
+-  if (!IsObserving())
+-    return ConnectionTypeToString(GetNetworkStateNotifier().ConnectionType());
++  // if (!IsObserving())
++  //   return ConnectionTypeToString(GetNetworkStateNotifier().ConnectionType());
+ 
+   // If observing, return m_type which changes when the event fires, per spec.
+-  return ConnectionTypeToString(type_);
++  // return ConnectionTypeToString(type_);
++
++  char buffer[64] = { '\0' };
++  get_virtual_property("net.connecion.type", buffer, sizeof(buffer));
++  return WTF::String(buffer);
+ }
+ 
+ double NetworkInformation::downlinkMax() const {
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+index 92860df202d4e..4150188814d34 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -132,6 +132,8 @@
+ #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
+ #include "third_party/blink/renderer/platform/wtf/threading_primitives.h"
+ 
++#include "vprops.c"
++
+ namespace blink {
+ 
+ bool WebGLRenderingContextBase::webgl_context_limits_initialized_ = false;
+@@ -3363,6 +3365,7 @@ void WebGLRenderingContextBase::RecordUKMCanvasDrawnToAtFirstDrawCall() {
+ 
+ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+                                                     GLenum pname) {
++  char buffer[64] = { '\0' };
+   if (isContextLost())
+     return ScriptValue::CreateNull(script_state->GetIsolate());
+   const int kIntZero = 0;
+@@ -3589,14 +3592,16 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+-        if (IdentifiabilityStudySettings::Get()->ShouldSample(
+-                blink::IdentifiableSurface::Type::kWebGLParameter)) {
+-          RecordIdentifiableGLParameterDigest(
+-              pname, IdentifiabilityBenignStringToken(
+-                         String(ContextGL()->GetString(GL_RENDERER))));
+-        }
+-        return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_RENDERER)));
++//         if (IdentifiabilityStudySettings::Get()->ShouldSample(
++//                 blink::IdentifiableSurface::Type::kWebGLParameter)) {
++//           RecordIdentifiableGLParameterDigest(
++//               pname, IdentifiabilityBenignStringToken(
++//                          String(ContextGL()->GetString(GL_RENDERER))));
++//         }
++//         return WebGLAny(script_state,
++//                         String(ContextGL()->GetString(GL_RENDERER)));
++        get_virtual_property("sys.gpu.renderer", buffer, sizeof(buffer));
++        return WebGLAny(script_state, String(buffer));
+       }
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
+@@ -3604,14 +3609,16 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+-        if (IdentifiabilityStudySettings::Get()->ShouldSample(
+-                blink::IdentifiableSurface::Type::kWebGLParameter)) {
+-          RecordIdentifiableGLParameterDigest(
+-              pname, IdentifiabilityBenignStringToken(
+-                         String(ContextGL()->GetString(GL_VENDOR))));
+-        }
+-        return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_VENDOR)));
++//         if (IdentifiabilityStudySettings::Get()->ShouldSample(
++//                 blink::IdentifiableSurface::Type::kWebGLParameter)) {
++//           RecordIdentifiableGLParameterDigest(
++//               pname, IdentifiabilityBenignStringToken(
++//                          String(ContextGL()->GetString(GL_VENDOR))));
++//         }
++//         return WebGLAny(script_state,
++//                         String(ContextGL()->GetString(GL_VENDOR)));
++        get_virtual_property("sys.gpu.vendor", buffer, sizeof(buffer));
++        return WebGLAny(script_state, String(buffer));
+       }
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
